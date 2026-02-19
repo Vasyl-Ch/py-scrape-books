@@ -1,4 +1,10 @@
+import re
+from typing import Iterable, Any, Generator
+
 import scrapy
+from scrapy.http import HtmlResponse
+
+from ecommerce.items import EcommerceItem
 
 
 class BooksSpider(scrapy.Spider):
@@ -12,37 +18,62 @@ class BooksSpider(scrapy.Spider):
         "FEED_EXPORT_ENCODING": "utf-8",
     }
 
-    def parse(self, response):
-        books = response.css("article.product_pod")
+    def parse(
+            self,
+            response: HtmlResponse
+    ) -> Iterable[scrapy.Request]:
 
-        for book in books:
-            relative_url = book.css("h3 a::attr(href)").get()
-            if relative_url:
-                absolute_url = response.urljoin(relative_url)
-                yield scrapy.Request(absolute_url, callback=self.parse_book_details)
+        book_links = response.css(
+            "article.product_pod h3 a::attr(href)"
+        ).getall()
+
+        for book_link in book_links:
+            yield response.follow(
+                book_link,
+                callback=self.parse_book_details
+            )
 
         next_page = response.css("li.next a::attr(href)").get()
-
-        if next_page is not None:
+        if next_page:
             yield response.follow(next_page, callback=self.parse)
 
-    def parse_book_details(self, response):
-        price_raw = response.css("p.price_color::text").get()
-        price = price_raw.replace("£", "") if price_raw else "0.00"
+    def parse_book_details(
+            self,
+            response: HtmlResponse
+    ) -> Generator[EcommerceItem, Any, None]:
 
-        stock_raw = "".join(response.css("p.instock.availability::text").getall()).strip()
-        amount_in_stock = stock_raw.split("(")[1].split()[0] if "(" in stock_raw else "0"
+        item = EcommerceItem()
 
-        rating_classes = response.css("p.star-rating::attr(class)").get()
-        rating_text = rating_classes.replace("star-rating ", "")
-        rating_map = {"One": 1, "Two": 2, "Three": 3, "Fo ur": 4, "Five": 5}
+        item["title"] = response.css("h1::text").get()
 
-        yield {
-            "title": response.css("h1::text").get(),
-            "price": float(price),
-            "amount_in_stock": int(amount_in_stock),
-            "rating": rating_map.get(rating_text, 0),
-            "category": response.css("ul.breadcrumb li:nth-last-child(2) a::text").get(),
-            "description": response.css("#product_description + p::text").get(),
-            "upc": response.xpath("//th[text()='UPC']/following-sibling::td/text()").get(),
-        }
+        price_raw = response.css("p.price_color::text").get(default="0.00")
+        item["price"] = float(re.sub(r"[^\d.]", "", price_raw))
+
+        stock_raw = "".join(
+            response.css("p.instock.availability::text").getall()
+        )
+        stock_match = re.search(r"\((\d+) available\)", stock_raw)
+        item["amount_in_stock"] = (
+            int(stock_match.group(1)) if stock_match else 0
+        )
+
+        rating_classes = response.css(
+            "p.star-rating::attr(class)"
+        ).get(default="")
+        rating_text = rating_classes.replace("star-rating", "").strip()
+        rating_map = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
+        item["rating"] = rating_map.get(rating_text, 0)
+
+        item["category"] = response.css(
+            "ul.breadcrumb li:nth-last-child(2) a::text"
+        ).get()
+
+        item["description"] = response.css(
+            "#product_description + p::text"
+        ).get(default="").strip()
+
+        item["upc"] = response.xpath(
+            "//th[text()='UPC']/following-sibling::td/text()"
+        ).get()
+
+        yield item
