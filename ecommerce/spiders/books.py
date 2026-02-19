@@ -1,5 +1,5 @@
 import re
-from typing import Iterable, Any, Generator
+from typing import Iterable, Any
 
 import scrapy
 from scrapy.http import HtmlResponse
@@ -16,13 +16,13 @@ class BooksSpider(scrapy.Spider):
         "FEED_FORMAT": "jsonlines",
         "FEED_URI": "books.jl",
         "FEED_EXPORT_ENCODING": "utf-8",
+
+        "CONCURRENT_REQUESTS": 100,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 100,
+        "DOWNLOAD_DELAY": 0,
     }
 
-    def parse(
-            self,
-            response: HtmlResponse
-    ) -> Iterable[scrapy.Request]:
-
+    def parse(self, response: HtmlResponse) -> Iterable[scrapy.Request]:
         book_links = response.css(
             "article.product_pod h3 a::attr(href)"
         ).getall()
@@ -37,25 +37,27 @@ class BooksSpider(scrapy.Spider):
         if next_page:
             yield response.follow(next_page, callback=self.parse)
 
-    def parse_book_details(
-            self,
-            response: HtmlResponse
-    ) -> Generator[EcommerceItem, Any, None]:
-
+    def parse_book_details(self, response: HtmlResponse) -> Iterable[Any]:
         item = EcommerceItem()
 
-        item["title"] = response.css("h1::text").get()
+        item["title"] = response.css("h1::text").get(default="").strip()
 
         price_raw = response.css("p.price_color::text").get(default="0.00")
-        item["price"] = float(re.sub(r"[^\d.]", "", price_raw))
+        try:
+            item["price"] = float(re.sub(r"[^\d.]", "", price_raw))
+        except ValueError:
+            item["price"] = 0.0
 
         stock_raw = "".join(
             response.css("p.instock.availability::text").getall()
         )
         stock_match = re.search(r"\((\d+) available\)", stock_raw)
-        item["amount_in_stock"] = (
-            int(stock_match.group(1)) if stock_match else 0
-        )
+        try:
+            item["amount_in_stock"] = (
+                int(stock_match.group(1)) if stock_match else 0
+            )
+        except (ValueError, IndexError):
+            item["amount_in_stock"] = 0
 
         rating_classes = response.css(
             "p.star-rating::attr(class)"
@@ -66,7 +68,7 @@ class BooksSpider(scrapy.Spider):
 
         item["category"] = response.css(
             "ul.breadcrumb li:nth-last-child(2) a::text"
-        ).get()
+        ).get(default="").strip()
 
         item["description"] = response.css(
             "#product_description + p::text"
@@ -74,6 +76,6 @@ class BooksSpider(scrapy.Spider):
 
         item["upc"] = response.xpath(
             "//th[text()='UPC']/following-sibling::td/text()"
-        ).get()
+        ).get(default="").strip()
 
         yield item
